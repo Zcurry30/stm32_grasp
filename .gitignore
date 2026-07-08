@@ -1,0 +1,31 @@
+# Build outputs
+MDK-ARM/*/
+!MDK-ARM/DebugConfig/
+!MDK-ARM/RTE/
+*.o
+*.d
+*.crf
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.lnp
+*.htm
+*.build_log.htm
+*.dep
+
+# Keil local/user state
+*.uvguix.*
+*.scvd
+*.dbgconf.bak
+JLinkLog.txt
+JLinkSettings.ini
+
+# CubeMX backups and local metadata
+*.ioc.bak
+.mxproject.bak
+
+# Codex/local workspace metadata
+.agents/
