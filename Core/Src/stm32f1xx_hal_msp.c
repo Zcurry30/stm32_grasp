@@ -56,6 +56,36 @@
 /* USER CODE BEGIN 0 */
 
 /* USER CODE END 0 */
+
+void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* htim_base)
+{
+  if (htim_base->Instance == TIM2)
+  {
+    __HAL_RCC_TIM2_CLK_ENABLE();
+  }
+}
+
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  if (htim->Instance == TIM2)
+  {
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitStruct.Pin = SERVO1_PWM_Pin|SERVO2_PWM_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  }
+}
+
+void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* htim_base)
+{
+  if (htim_base->Instance == TIM2)
+  {
+    __HAL_RCC_TIM2_CLK_DISABLE();
+  }
+}
 /**
   * Initializes the Global MSP.
   */

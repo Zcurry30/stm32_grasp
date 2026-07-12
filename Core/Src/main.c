@@ -32,6 +32,18 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define CLAW_BUTTON_ACTIVE GPIO_PIN_RESET
+#define SERVO_MIN_PULSE_US 500U
+#define SERVO_MAX_PULSE_US 2500U
+#define SERVO_MAX_ANGLE 180U
+#define SERVO_STEP_INTERVAL_MS 20U
+
+/* Calibrate these six angles after installing the two mirror-image servos. */
+#define SERVO1_INITIAL_ANGLE 90U
+#define SERVO2_INITIAL_ANGLE 90U
+#define SERVO1_UP_ANGLE 35U
+#define SERVO2_UP_ANGLE 145U
+#define SERVO1_DOWN_ANGLE 145U
+#define SERVO2_DOWN_ANGLE 35U
 
 /* USER CODE END PD */
 
@@ -41,6 +53,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
 
@@ -49,7 +62,9 @@
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* USER CODE END PFP */
 
@@ -57,60 +72,64 @@ static void MX_GPIO_Init(void);
 /* USER CODE BEGIN 0 */
 typedef enum
 {
-  MOTOR_STOP = 0,
-  MOTOR_FORWARD,
-  MOTOR_REVERSE
-} MotorDirection_t;
+  CLAW_STATE_INITIAL = 0,
+  CLAW_STATE_GRAB_UP,
+  CLAW_STATE_GRAB_DOWN
+} ClawState_t;
 
-static void Motor_Set(GPIO_TypeDef *in1Port, uint16_t in1Pin,
-                      GPIO_TypeDef *in2Port, uint16_t in2Pin,
-                      MotorDirection_t direction)
+static uint16_t servo1CurrentAngle = SERVO1_INITIAL_ANGLE;
+static uint16_t servo2CurrentAngle = SERVO2_INITIAL_ANGLE;
+static uint16_t servo1TargetAngle = SERVO1_INITIAL_ANGLE;
+static uint16_t servo2TargetAngle = SERVO2_INITIAL_ANGLE;
+static uint32_t lastServoStepTick;
+
+static uint16_t Servo_AngleToPulse(uint16_t angle)
 {
-  if (direction == MOTOR_FORWARD)
+  if (angle > SERVO_MAX_ANGLE)
   {
-    HAL_GPIO_WritePin(in2Port, in2Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(in1Port, in1Pin, GPIO_PIN_SET);
+    angle = SERVO_MAX_ANGLE;
   }
-  else if (direction == MOTOR_REVERSE)
+  return (uint16_t)(SERVO_MIN_PULSE_US +
+                    ((uint32_t)angle * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)) /
+                    SERVO_MAX_ANGLE);
+}
+
+static void Servo_WriteAngles(uint16_t servo1Angle, uint16_t servo2Angle)
+{
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, Servo_AngleToPulse(servo1Angle));
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, Servo_AngleToPulse(servo2Angle));
+}
+
+static void Claw_SetState(ClawState_t state)
+{
+  if (state == CLAW_STATE_GRAB_UP)
   {
-    HAL_GPIO_WritePin(in1Port, in1Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(in2Port, in2Pin, GPIO_PIN_SET);
+    servo1TargetAngle = SERVO1_UP_ANGLE;
+    servo2TargetAngle = SERVO2_UP_ANGLE;
+  }
+  else if (state == CLAW_STATE_GRAB_DOWN)
+  {
+    servo1TargetAngle = SERVO1_DOWN_ANGLE;
+    servo2TargetAngle = SERVO2_DOWN_ANGLE;
   }
   else
   {
-    HAL_GPIO_WritePin(in1Port, in1Pin, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(in2Port, in2Pin, GPIO_PIN_RESET);
+    servo1TargetAngle = SERVO1_INITIAL_ANGLE;
+    servo2TargetAngle = SERVO2_INITIAL_ANGLE;
   }
 }
 
-static void Claw_Stop(void)
+static uint16_t Servo_StepToward(uint16_t current, uint16_t target)
 {
-  Motor_Set(MOTOR1_IN1_GPIO_Port, MOTOR1_IN1_Pin,
-            MOTOR1_IN2_GPIO_Port, MOTOR1_IN2_Pin,
-            MOTOR_STOP);
-  Motor_Set(MOTOR2_IN1_GPIO_Port, MOTOR2_IN1_Pin,
-            MOTOR2_IN2_GPIO_Port, MOTOR2_IN2_Pin,
-            MOTOR_STOP);
-}
-
-static void Claw_MoveUp(void)
-{
-  Motor_Set(MOTOR1_IN1_GPIO_Port, MOTOR1_IN1_Pin,
-            MOTOR1_IN2_GPIO_Port, MOTOR1_IN2_Pin,
-            MOTOR_FORWARD);
-  Motor_Set(MOTOR2_IN1_GPIO_Port, MOTOR2_IN1_Pin,
-            MOTOR2_IN2_GPIO_Port, MOTOR2_IN2_Pin,
-            MOTOR_FORWARD);
-}
-
-static void Claw_MoveDown(void)
-{
-  Motor_Set(MOTOR1_IN1_GPIO_Port, MOTOR1_IN1_Pin,
-            MOTOR1_IN2_GPIO_Port, MOTOR1_IN2_Pin,
-            MOTOR_REVERSE);
-  Motor_Set(MOTOR2_IN1_GPIO_Port, MOTOR2_IN1_Pin,
-            MOTOR2_IN2_GPIO_Port, MOTOR2_IN2_Pin,
-            MOTOR_REVERSE);
+  if (current < target)
+  {
+    return current + 1U;
+  }
+  if (current > target)
+  {
+    return current - 1U;
+  }
+  return current;
 }
 
 static uint8_t Button_IsPressed(GPIO_TypeDef *buttonPort, uint16_t buttonPin)
@@ -120,20 +139,33 @@ static uint8_t Button_IsPressed(GPIO_TypeDef *buttonPort, uint16_t buttonPin)
 
 static void Claw_Task(void)
 {
+  static uint8_t previousUpPressed;
+  static uint8_t previousDownPressed;
   uint8_t upPressed = Button_IsPressed(CLAW_UP_BUTTON_GPIO_Port, CLAW_UP_BUTTON_Pin);
   uint8_t downPressed = Button_IsPressed(CLAW_DOWN_BUTTON_GPIO_Port, CLAW_DOWN_BUTTON_Pin);
 
-  if ((upPressed != 0U) && (downPressed == 0U))
+  if ((upPressed != 0U) && (downPressed != 0U))
   {
-    Claw_MoveUp();
+    Claw_SetState(CLAW_STATE_INITIAL);
   }
-  else if ((downPressed != 0U) && (upPressed == 0U))
+  else if ((upPressed != 0U) && (previousUpPressed == 0U))
   {
-    Claw_MoveDown();
+    Claw_SetState(CLAW_STATE_GRAB_UP);
   }
-  else
+  else if ((downPressed != 0U) && (previousDownPressed == 0U))
   {
-    Claw_Stop();
+    Claw_SetState(CLAW_STATE_GRAB_DOWN);
+  }
+
+  previousUpPressed = upPressed;
+  previousDownPressed = downPressed;
+
+  if ((HAL_GetTick() - lastServoStepTick) >= SERVO_STEP_INTERVAL_MS)
+  {
+    lastServoStepTick = HAL_GetTick();
+    servo1CurrentAngle = Servo_StepToward(servo1CurrentAngle, servo1TargetAngle);
+    servo2CurrentAngle = Servo_StepToward(servo2CurrentAngle, servo2TargetAngle);
+    Servo_WriteAngles(servo1CurrentAngle, servo2CurrentAngle);
   }
 }
 
@@ -168,8 +200,17 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  Claw_Stop();
+  Servo_WriteAngles(servo1CurrentAngle, servo2CurrentAngle);
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /* USER CODE END 2 */
 
@@ -184,6 +225,57 @@ int main(void)
     HAL_Delay(10);
   }
   /* USER CODE END 3 */
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 7;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 19999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 1500;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  HAL_TIM_MspPostInit(&htim2);
 }
 
 /**
@@ -234,16 +326,6 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, MOTOR1_IN1_Pin|MOTOR1_IN2_Pin|MOTOR2_IN1_Pin|MOTOR2_IN2_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : MOTOR1_IN1_Pin MOTOR1_IN2_Pin MOTOR2_IN1_Pin MOTOR2_IN2_Pin */
-  GPIO_InitStruct.Pin = MOTOR1_IN1_Pin|MOTOR1_IN2_Pin|MOTOR2_IN1_Pin|MOTOR2_IN2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : CLAW_UP_BUTTON_Pin CLAW_DOWN_BUTTON_Pin */
   GPIO_InitStruct.Pin = CLAW_UP_BUTTON_Pin|CLAW_DOWN_BUTTON_Pin;
