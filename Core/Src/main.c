@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -53,18 +54,16 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
-
+TIM_HandleTypeDef htim2;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+static void MX_TIM2_Init(void);
 
 /* USER CODE END PFP */
 
@@ -141,21 +140,41 @@ static void Claw_Task(void)
 {
   static uint8_t previousUpPressed;
   static uint8_t previousDownPressed;
+  static ClawState_t currentState = CLAW_STATE_INITIAL;
   uint8_t upPressed = Button_IsPressed(CLAW_UP_BUTTON_GPIO_Port, CLAW_UP_BUTTON_Pin);
   uint8_t downPressed = Button_IsPressed(CLAW_DOWN_BUTTON_GPIO_Port, CLAW_DOWN_BUTTON_Pin);
 
   if ((upPressed != 0U) && (downPressed != 0U))
   {
-    Claw_SetState(CLAW_STATE_INITIAL);
+    /* Both pressed: go to middle immediately */
+    currentState = CLAW_STATE_INITIAL;
   }
   else if ((upPressed != 0U) && (previousUpPressed == 0U))
   {
-    Claw_SetState(CLAW_STATE_GRAB_UP);
+    /* UP button: toggle between INITIAL <-> GRAB_UP */
+    if (currentState == CLAW_STATE_GRAB_UP)
+    {
+      currentState = CLAW_STATE_INITIAL;
+    }
+    else
+    {
+      currentState = CLAW_STATE_GRAB_UP;
+    }
   }
   else if ((downPressed != 0U) && (previousDownPressed == 0U))
   {
-    Claw_SetState(CLAW_STATE_GRAB_DOWN);
+    /* DOWN button: toggle between INITIAL <-> GRAB_DOWN */
+    if (currentState == CLAW_STATE_GRAB_DOWN)
+    {
+      currentState = CLAW_STATE_INITIAL;
+    }
+    else
+    {
+      currentState = CLAW_STATE_GRAB_DOWN;
+    }
   }
+
+  Claw_SetState(currentState);
 
   previousUpPressed = upPressed;
   previousDownPressed = downPressed;
@@ -312,26 +331,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pins : CLAW_UP_BUTTON_Pin CLAW_DOWN_BUTTON_Pin */
-  GPIO_InitStruct.Pin = CLAW_UP_BUTTON_Pin|CLAW_DOWN_BUTTON_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
 
 /* USER CODE BEGIN 4 */
